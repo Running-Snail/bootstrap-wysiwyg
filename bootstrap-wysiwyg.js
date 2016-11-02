@@ -3,6 +3,103 @@
 /*jslint browser:true*/
 (function ($) {
 	'use strict';
+
+	var pasteHTMLAtRange = function(range, html) {
+		range.deleteContents();
+		var el = document.createElement("div");
+		el.innerHTML = html;
+		var frag = document.createDocumentFragment(), node, lastNode;
+		while ( (node = el.firstChild) ) {
+			lastNode = frag.appendChild(node);
+		}
+		range.insertNode(frag);
+		return lastNode;
+	}
+	var IndentCommand = function(sel) {
+		this.sel = sel;
+		this.undoed = true;
+		this.spacesNode = undefined;
+	}
+	IndentCommand.prototype.do = function() {
+		if (this.undoed == false) {
+			return;
+		}
+		var range = undefined;
+		if (this.spacesNode) {
+			range = document.createRange();
+			range.setStart(this.spacesNode, 0);
+			range.setEnd(this.spacesNode, 0);
+		} else {
+			range = this.sel.getRangeAt(0);
+		}
+		this.spacesNode = pasteHTMLAtRange(range, '&nbsp;&nbsp;&nbsp;&nbsp;');
+
+		// set caret
+		var select = document.createRange();
+		select.setStart(this.spacesNode, this.spacesNode.nodeValue.length);
+		select.setEnd(this.spacesNode, this.spacesNode.nodeValue.length);
+		this.sel.removeAllRanges();
+		this.sel.addRange(select);
+
+		this.undoed = false;
+	}
+	IndentCommand.prototype.undo = function() {
+		if (this.undoed) {
+			return;
+		}
+		this.spacesNode.nodeValue = '';
+
+		// set caret
+		var select = document.createRange();
+		select.setStart(this.spacesNode, this.spacesNode.nodeValue.length);
+		select.setEnd(this.spacesNode, this.spacesNode.nodeValue.length);
+		this.sel.removeAllRanges();
+		this.sel.addRange(select);
+		this.undoed = true;
+	}
+	var OutdentCommand = function(sel) {
+		this.sel = sel;
+		this.undoed = true;
+		this.spacesNode = undefined;
+	}
+	OutdentCommand.prototype.do = function() {
+		if (this.undoed == false) {
+			return;
+		}
+		if (typeof this.spacesNode === 'undefined') {
+			var range = this.sel.getRangeAt(0);
+			if (range.startContainer.nodeValue.trim().length != 0) {
+				return;
+			}
+			this.spacesNode = range.startContainer;		
+		}
+		this.spacesNode.nodeValue = '';
+
+		// set caret
+		var select = document.createRange();
+		select.setStart(this.spacesNode.previousSibling, this.spacesNode.previousSibling.nodeValue.length);
+		select.setEnd(this.spacesNode.previousSibling, this.spacesNode.previousSibling.nodeValue.length);
+		this.sel.removeAllRanges();
+		this.sel.addRange(select);
+		this.undoed = false;
+	}
+	OutdentCommand.prototype.undo = function() {
+		if (this.undoed) {
+			return;
+		}
+		var range = document.createRange();
+		range.setStart(this.spacesNode, 0);
+		range.setEnd(this.spacesNode, 0);
+		this.spacesNode = pasteHTMLAtRange(range, '&nbsp;&nbsp;&nbsp;&nbsp;');
+
+		// set caret
+		var select = document.createRange();
+		select.setStart(this.spacesNode, this.spacesNode.nodeValue.length);
+		select.setEnd(this.spacesNode, this.spacesNode.nodeValue.length);
+		this.sel.removeAllRanges();
+		this.sel.addRange(select);
+		this.undoed = true;
+	}
 	var readFileIntoDataUrl = function (fileInfo) {
 		var loader = $.Deferred(),
 			fReader = new FileReader();
@@ -20,6 +117,7 @@
 	};
 	$.fn.wysiwyg = function (userOptions) {
 		var editor = this,
+			lastCommandObj = undefined,
 			selectedRange,
 			options,
 			toolbarBtnSelector,
@@ -35,11 +133,82 @@
 					});
 				}
 			},
+			insertHTMLAtCaret = function(html) {
+					var sel, range;
+					if (window.getSelection) {
+							// IE9 and non-IE
+							sel = window.getSelection();
+							if (sel.getRangeAt && sel.rangeCount) {
+									range = sel.getRangeAt(0);
+									range.deleteContents();
+
+									// Range.createContextualFragment() would be useful here but is
+									// only relatively recently standardized and is not supported in
+									// some browsers (IE9, for one)
+									var el = document.createElement("div");
+									el.innerHTML = html;
+									var frag = document.createDocumentFragment(), node, lastNode;
+									while ( (node = el.firstChild) ) {
+											lastNode = frag.appendChild(node);
+									}
+									range.insertNode(frag);
+
+									// Preserve the selection
+									if (lastNode) {
+											var select = range.cloneRange();
+											select.setStartAfter(lastNode);
+											select.collapse(true);
+											select.setStart(lastNode, lastNode.nodeValue.length);
+											select.setEnd(lastNode, lastNode.nodeValue.length);
+											sel.removeAllRanges();
+											sel.addRange(select);
+									}
+							}
+					}
+			},
+			deleteTabSpaces = function() {
+					var sel, range;
+					if (window.getSelection) {
+							// IE9 and non-IE
+							sel = window.getSelection();
+							if (sel.getRangeAt && sel.rangeCount) {
+									range = sel.getRangeAt(0);
+									var spaces = range.cloneRange();
+									spaces.setStart(range.startContainer, 0);
+									if (spaces.startContainer.nodeValue.trim().length == 0) {
+										spaces.deleteContents();
+									}
+
+									// Preserve the selection
+									var select = spaces.cloneRange();
+									select.setStart(spaces.startContainer.previousSibling, spaces.startContainer.previousSibling.nodeValue.length);
+									select.setEnd(spaces.startContainer.previousSibling, spaces.startContainer.previousSibling.nodeValue.length);
+									sel.removeAllRanges();
+									sel.addRange(select);
+							}
+					}
+			},
 			execCommand = function (commandWithArgs, valueArg) {
 				var commandArr = commandWithArgs.split(' '),
 					command = commandArr.shift(),
 					args = commandArr.join(' ') + (valueArg || '');
-				document.execCommand(command, 0, args);
+				if (command == 'indent') {
+					var sel = window.getSelection();
+					lastCommandObj = new IndentCommand(sel);
+					lastCommandObj.do();
+				} else if (command == 'outdent') {
+					var sel = window.getSelection();
+					lastCommandObj = new OutdentCommand(sel);
+					lastCommandObj.do();
+				} else {
+					if (command == 'undo' && typeof lastCommandObj != 'undefined') {
+						lastCommandObj.undo();
+					} else if (command == 'redo' && typeof lastCommandObj != 'undefined' ) {
+						lastCommandObj.do();
+					} else {
+						document.execCommand(command, 0, args);
+					}
+				}
 				updateToolbar();
 			},
 			bindHotkeys = function (hotKeys) {
